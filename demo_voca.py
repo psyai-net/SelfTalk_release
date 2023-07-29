@@ -48,7 +48,7 @@ def test_model(args):
     start = time.time()
     prediction, lip_features, logits = model.predict(audio_feature, template)
     end = time.time()
-    print("Time: ", end - start)
+    print("Model predict time: ", end - start)
     prediction = prediction.squeeze()
     np.save(os.path.join(args.result_path, test_name), prediction.detach().cpu().numpy())
 
@@ -235,6 +235,7 @@ def main():
 
     template = Mesh(filename=temp)
     predicted_vertices_out = np.load(fa_path).reshape(-1, 5023, 3)
+    print("Start rendering...")
     output_sequence_meshes(predicted_vertices_out, template, out_path)
 
     render_sequence_meshes(audio_fname, predicted_vertices_out, template, out_path, uv_template_fname='',

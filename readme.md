@@ -165,6 +165,7 @@ If you find this work useful for your research, please cite our paper:
 Here are some great resources we benefit:
 - [Faceformer](https://github.com/EvelynFan/FaceFormer) for pipeline and readme
 - [CoderTalker](https://github.com/Doubiiu/CodeTalker/blob/main/BIWI/README.md) for BIWI dataset preprocessing
+- [FaceXHuBERT](https://github.com/galib360/FaceXHuBERT) for BIWI audio processing
 - [B3D(AC)2](https://data.vision.ee.ethz.ch/cvl/datasets/b3dac2.en.html) and [VOCASET](https://voca.is.tue.mpg.de/) for dataset
 - [Wav2Vec2](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-english) for audio encoder
 - [MPI-IS/mesh](https://github.com/MPI-IS/mesh) for mesh processing

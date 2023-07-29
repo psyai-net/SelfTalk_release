@@ -134,7 +134,7 @@ class SelfTalk(nn.Module):
         logits = self.lm_head(self.dropout(lip_features))
         vertice_out = vertice_out + template
 
-        return vertice_out, vertice, lip_features, text_hidden_states, logits, text_logits, lip_out, lip_gt
+        return vertice_out, vertice, lip_features, text_hidden_states, logits, text_logits
 
     def predict(self, audio, template):
         template = template.unsqueeze(1)
