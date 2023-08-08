@@ -1,9 +1,9 @@
-numpy
-scipy==1.7.1
-librosa==0.8.1
+numpy==1.21.6
+scipy==1.9.1
+librosa
 tqdm
 pickle
-transformers==4.6.1
-trimesh==3.9.27
+transformers==4.26.0
+trimesh==3.20.1
 pyrender==0.1.45
 opencv-python
