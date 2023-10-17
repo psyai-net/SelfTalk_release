@@ -8,7 +8,7 @@ Official PyTorch implementation for the paper:
 >
 > Ziqiao Peng, Yihao Luo, Yue Shi, Hao Xu, Xiangyu Zhu, Hongyan Liu, Jun He, Zhaoxin Fan
 >
-> <a href='https://arxiv.org/abs/2306.10799'><img src='https://img.shields.io/badge/arXiv-2306.10799-red'></a> <a href='https://ziqiaopeng.github.io/selftalk/'><img src='https://img.shields.io/badge/Project-Video-Green'></a> [![License ↗](https://img.shields.io/badge/License-CCBYNC4.0-blue.svg)](LICENSE)
+>  [Arxiv](https://arxiv.org/abs/2306.10799) | [Project Page](https://ziqiaopeng.github.io/selftalk/) | [License](https://github.com/psyai-net/SelfTalk_release/blob/main/LICENSE)
 
 
 <p align="center">
