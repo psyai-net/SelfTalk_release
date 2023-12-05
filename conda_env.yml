@@ -1,0 +1,32 @@
+# micromamba env create -f conda_env.yml
+
+name: selftalk
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - pytorch3d
+  - defaults
+dependencies:
+  - pip
+  - python>=3.8,<=3.10
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - pytorch3d
+  - plotly
+  - tensorboard
+  - tqdm
+  - numpy=1.21
+  - pyyaml
+  - scipy
+  - librosa
+  - trimesh
+  - pyrender
+  - ffmpeg>=5.1
+  - opencv<=4.7
+  - transformers=4.26.0
+  - loguru
+  - pip:
+      - git+https://github.com/MPI-IS/mesh
+      - git+https://github.com/facebookresearch/iopath

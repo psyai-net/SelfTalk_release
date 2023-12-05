@@ -138,7 +138,7 @@ class SelfTalk(nn.Module):
 
     def predict(self, audio, template):
         template = template.unsqueeze(1)
-        hidden_states = self.audio_encoder(audio, self.dataset).last_hidden_state
+        hidden_states = self.pipeline_hidden_states(audio)
         if self.dataset == "BIWI":
             if hidden_states.shape[1] % 2 != 0:
                 hidden_states = hidden_states[:, :hidden_states.shape[1] - 1]
@@ -156,7 +156,7 @@ class SelfTalk(nn.Module):
             lip_offset = linear_interpolation(lip_offset, 30, 50, output_len=None)
         elif self.dataset == "BIWI":
             lip_offset = linear_interpolation(lip_offset, 25, 50, output_len=None)
-        lip_features = self.transformer(lip_offset, lip_offset)
+        lip_features = self.pipeline_lip_features(lip_offset)
         if self.dataset == "vocaset":
             vertice_out = vertice_out + template
         elif self.dataset == "BIWI":
@@ -164,3 +164,13 @@ class SelfTalk(nn.Module):
         logits = self.lm_head(self.dropout(lip_features))
 
         return vertice_out, lip_features, logits
+
+    def pipeline_hidden_states(self, audio, frame_num=None, sample_rate=16000, sliding_window=30):
+        return torch.cat(
+            [self.audio_encoder(k, self.dataset, frame_num=frame_num).last_hidden_state.detach() for k in
+             torch.split(audio, sample_rate*sliding_window, dim=1)], 1)
+
+    def pipeline_lip_features(self, lip_features, split_size=1024 * 20):
+        return torch.cat(
+            [self.transformer(k, k).detach() for k in
+             torch.split(lip_features, split_size, dim=1)], 1)
