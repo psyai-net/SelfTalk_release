@@ -1,6 +1,19 @@
+import gc
+from concurrent.futures import ThreadPoolExecutor
+from itertools import cycle, islice
+
+from PIL import Image
 import numpy as np
 import librosa
 import os, argparse, pickle
+
+from pytorch3d.io import load_obj
+from pytorch3d.renderer import TexturesVertex, FoVPerspectiveCameras, RasterizationSettings, DirectionalLights, \
+    BlendParams, MeshRenderer, MeshRasterizer, SoftPhongShader, look_at_view_transform
+from pytorch3d.structures import Meshes
+from tqdm import tqdm
+import torch.multiprocessing as mp
+
 from SelfTalk import SelfTalk
 from transformers import Wav2Vec2Processor
 import torch
@@ -8,11 +21,12 @@ import time
 import cv2
 import tempfile
 from subprocess import call
-import pyrender
 from psbody.mesh import Mesh
 import trimesh
+from loguru import logger
 
-os.environ['PYOPENGL_PLATFORM'] = 'egl'  # egl
+
+# os.environ['PYOPENGL_PLATFORM'] = 'egl'  # egl
 
 
 @torch.no_grad()
@@ -46,11 +60,16 @@ def test_model(args):
     audio_feature = torch.FloatTensor(audio_feature).to(device=args.device)
 
     start = time.time()
-    prediction, lip_features, logits = model.predict(audio_feature, template)
+    prediction, _, _ = model.predict(audio_feature, template)
     end = time.time()
     print("Model predict time: ", end - start)
     prediction = prediction.squeeze()
     np.save(os.path.join(args.result_path, test_name), prediction.detach().cpu().numpy())
+
+    del prediction
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 def get_unit_factor(unit):
@@ -64,82 +83,63 @@ def get_unit_factor(unit):
         raise ValueError('Unit not supported')
 
 
-# The implementation of rendering is borrowed from VOCA: https://github.com/TimoBolkart/voca/blob/master/utils/rendering.py
-def render_mesh_helper(mesh, t_center, rot=np.zeros(3), tex_img=None, v_colors=None,
-                       errors=None, error_unit='m', min_dist_in_mm=0.0, max_dist_in_mm=3.0, z_offset=0, xmag=0.5,
-                       y=0.7, z=1, camera='o', r=None):
-    camera_params = {'c': np.array([400, 400]),
-                     'k': np.array([-0.19816071, 0.92822711, 0, 0, 0]),
-                     'f': np.array([4754.97941935 / 2, 4754.97941935 / 2])}
-    frustum = {'near': 0.01, 'far': 3.0, 'height': 800, 'width': 800}
-
-    mesh_copy = Mesh(mesh.v, mesh.f)
-    mesh_copy.v[:] = cv2.Rodrigues(rot)[0].dot((mesh_copy.v - t_center).T).T + t_center
-    intensity = 2.0
-    rgb_per_v = None
-
-    primitive_material = pyrender.material.MetallicRoughnessMaterial(
-        alphaMode='BLEND',
-        baseColorFactor=[0.3, 0.3, 0.3, 1.0],
-        metallicFactor=0.8,
-        roughnessFactor=0.8
+def render_obj(obj_file, output_file, device="cuda", background_color=(0, 0, 0)):
+    cameras = FoVPerspectiveCameras(fov=30, device=device)
+    raster_settings = RasterizationSettings(
+        image_size=800,
+        faces_per_pixel=1,
+        cull_backfaces=True,
+        perspective_correct=True,
+        max_faces_per_bin=None,
+        blur_radius=0.0
     )
-    color = np.array([0.3, 0.5, 0.55])
+    lights = DirectionalLights(
+        device=device,
+        direction=((0.0, 0.0, 1),),
+        ambient_color=((0.18, 0.18, 0.18),),
+        diffuse_color=((0.55, 0.55, 0.55),),
+        specular_color=((0.05, 0.05, 0.05),),
+    )
+    blend_params = BlendParams(background_color=background_color)
+    renderer = MeshRenderer(
+        rasterizer=MeshRasterizer(
+            cameras=cameras,
+            raster_settings=raster_settings
+        ),
+        shader=SoftPhongShader(device=device, cameras=cameras, lights=lights, blend_params=blend_params)
+    )
 
-    tri_mesh = trimesh.Trimesh(vertices=mesh_copy.v, faces=mesh_copy.f, vertex_colors=rgb_per_v)
-    render_mesh = pyrender.Mesh.from_trimesh(tri_mesh, material=primitive_material, smooth=True)
+    distance = 0.58
+    elevation = 0.0
+    azimuth = 0.0
+    R, T = look_at_view_transform(distance, elevation, azimuth, device=device)
 
-    if 1 == 1:
-        scene = pyrender.Scene(ambient_light=[.2, .2, .2], bg_color=[0, 0, 0])
-    else:
-        scene = pyrender.Scene(ambient_light=[.2, .2, .2], bg_color=[255, 255, 255])
-    camera = pyrender.IntrinsicsCamera(fx=camera_params['f'][0],
-                                       fy=camera_params['f'][1],
-                                       cx=camera_params['c'][0],
-                                       cy=camera_params['c'][1],
-                                       znear=frustum['near'],
-                                       zfar=frustum['far'])
+    verts, faces_idx, _ = load_obj(obj_file, device=device, load_textures=False)
+    faces = faces_idx.verts_idx
+    # Initialize each vertex to be white in color.
+    verts_rgb = torch.ones_like(verts)[None]
+    textures = TexturesVertex(verts_features=verts_rgb.to(device))
 
-    scene.add(render_mesh, pose=np.eye(4))
+    obj_mesh = Meshes(
+        verts=[verts.to(device)],
+        faces=[faces.to(device)],
+        textures=textures
+    )
+    image = renderer(meshes_world=obj_mesh, R=R, T=T, bg_col=torch.tensor([0.0, 0.0, 0.0, 0.0]))
+    image = image.cpu().numpy().squeeze()[..., :3]
+    image = (image * 255).astype(np.uint8)
+    pillow_img = Image.fromarray(image)
+    pillow_img.save(output_file)
 
-    camera_pose = np.eye(4)
-    camera_pose[:3, 3] = np.array([0, 0, 1.0 - z_offset])
-    scene.add(camera, pose=[[1, 0, 0, 0],
-                            [0, 1, 0, 0],
-                            [0, 0, 1, 1],
-                            [0, 0, 0, 1]])
 
-    angle = np.pi / 6.0
-    pos = camera_pose[:3, 3]
-    light_color = np.array([1., 1., 1.])
-    light = pyrender.DirectionalLight(color=light_color, intensity=intensity)
-
-    light_pose = np.eye(4)
-    light_pose[:3, 3] = pos
-    scene.add(light, pose=light_pose.copy())
-
-    light_pose[:3, 3] = cv2.Rodrigues(np.array([angle, 0, 0]))[0].dot(pos)
-    scene.add(light, pose=light_pose.copy())
-
-    light_pose[:3, 3] = cv2.Rodrigues(np.array([-angle, 0, 0]))[0].dot(pos)
-    scene.add(light, pose=light_pose.copy())
-
-    light_pose[:3, 3] = cv2.Rodrigues(np.array([0, -angle, 0]))[0].dot(pos)
-    scene.add(light, pose=light_pose.copy())
-
-    light_pose[:3, 3] = cv2.Rodrigues(np.array([0, angle, 0]))[0].dot(pos)
-    scene.add(light, pose=light_pose.copy())
-
-    flags = pyrender.RenderFlags.SKIP_CULL_FACES
-    # try:
-    # egl
-    r = pyrender.OffscreenRenderer(viewport_width=frustum['width'], viewport_height=frustum['height'])
-    color, _ = r.render(scene, flags=flags)
-    # except:
-    #     print('pyrender: Failed rendering frame')
-    #     color = np.zeros((frustum['height'], frustum['width'], 3), dtype='uint8')
-
-    return color[..., ::-1]
+def write_image_task(data):
+    i_frame, mesh_path, image_path = data
+    obj_file = os.path.join(mesh_path, f"{i_frame:05d}.obj")
+    if not os.path.isfile(obj_file):
+        logger.error(f"could not find {obj_file}")
+        exit(1)
+    png_file = os.path.join(image_path, f"{i_frame:05d}.png")
+    render_obj(obj_file, png_file)
 
 
 def render_sequence_meshes(audio_fname, sequence_vertices, template, out_path, uv_template_fname='',
@@ -147,34 +147,28 @@ def render_sequence_meshes(audio_fname, sequence_vertices, template, out_path, u
     if not os.path.exists(out_path):
         os.makedirs(out_path)
 
-    tmp_video_file = tempfile.NamedTemporaryFile('w', suffix='.mp4', dir=out_path)
-    if int(cv2.__version__[0]) < 3:
-        writer = cv2.VideoWriter(tmp_video_file.name, cv2.cv.CV_FOURCC(*'mp4v'), 30, (800, 800), True)
-    else:
-        writer = cv2.VideoWriter(tmp_video_file.name, cv2.VideoWriter_fourcc(*'mp4v'), 30, (800, 800), True)
-
-    if os.path.exists(uv_template_fname) and os.path.exists(texture_img_fname):
-        uv_template = Mesh(filename=uv_template_fname)
-        vt, ft = uv_template.vt, uv_template.ft
-        tex_img = cv2.imread(texture_img_fname)[:, :, ::-1]
-    else:
-        vt, ft = None, None
-        tex_img = None
-
     num_frames = sequence_vertices.shape[0]
-    center = np.mean(sequence_vertices[0], axis=0)
-    for i_frame in range(num_frames):
-        render_mesh = Mesh(sequence_vertices[i_frame], template.f)
-        if vt is not None and ft is not None:
-            render_mesh.vt, render_mesh.ft = vt, ft
-        img = render_mesh_helper(render_mesh, center)
-        writer.write(img)
-    writer.release()
+    image_path = os.path.join(out_path, 'images')
+    mesh_path = os.path.join(out_path, 'meshes')
+    os.makedirs(image_path, exist_ok=True)
+    iterable = zip(range(num_frames), cycle([mesh_path]), cycle([image_path]))
+    with mp.Pool(processes=os.cpu_count()) as executor:
+        executor.map(write_image_task, islice(iterable, 0, None))
 
     video_fname = os.path.join(out_path, 'video.mp4')
-    cmd = ('ffmpeg' + ' -i {0} -i {1} -pix_fmt yuv420p -qscale 0 {2} -y'.format(
-        audio_fname, tmp_video_file.name, video_fname)).split()
+    cmd = f"ffmpeg -y -r 30 -i {image_path}/%05d.png -i {audio_fname} -pix_fmt yuv420p -qscale 0 {video_fname}".split()
     call(cmd)
+
+
+def write_obj_task(data):
+    i_frame, sequence_vertices, mesh_out_path, template, vt, ft, texture_img_fname = data
+    out_fname = os.path.join(mesh_out_path, '%05d.obj' % i_frame)
+    out_mesh = Mesh(sequence_vertices, template.f)
+    if vt is not None and ft is not None:
+        out_mesh.vt, out_mesh.ft = vt, ft
+    if os.path.exists(texture_img_fname):
+        out_mesh.set_texture_image(texture_img_fname)
+    out_mesh.write_obj(out_fname)
 
 
 def output_sequence_meshes(sequence_vertices, template, out_path, uv_template_fname='', texture_img_fname=''):
@@ -189,14 +183,11 @@ def output_sequence_meshes(sequence_vertices, template, out_path, uv_template_fn
         vt, ft = None, None
 
     num_frames = sequence_vertices.shape[0]
-    for i_frame in range(num_frames):
-        out_fname = os.path.join(mesh_out_path, '%05d.obj' % i_frame)
-        out_mesh = Mesh(sequence_vertices[i_frame], template.f)
-        if vt is not None and ft is not None:
-            out_mesh.vt, out_mesh.ft = vt, ft
-        if os.path.exists(texture_img_fname):
-            out_mesh.set_texture_image(texture_img_fname)
-        out_mesh.write_obj(out_fname)
+    iterable = zip(range(num_frames), sequence_vertices, cycle([mesh_out_path]), cycle([template]), cycle([vt]),
+                   cycle([ft]), cycle([texture_img_fname]))
+    with mp.Pool(processes=os.cpu_count() * 2) as p:
+        _ = list(tqdm(p.imap_unordered(write_obj_task, islice(iterable, 0, None)), total=num_frames,
+                      desc='output sequence meshes'))
 
 
 def main():
@@ -235,12 +226,14 @@ def main():
 
     template = Mesh(filename=temp)
     predicted_vertices_out = np.load(fa_path).reshape(-1, 5023, 3)
-    print("Start rendering...")
+    logger.info("Start output sequence meshes...")
     output_sequence_meshes(predicted_vertices_out, template, out_path)
 
+    logger.info("Start render sequence meshes...")
     render_sequence_meshes(audio_fname, predicted_vertices_out, template, out_path, uv_template_fname='',
                            texture_img_fname='')
 
 
 if __name__ == "__main__":
+    mp.set_start_method('spawn')
     main()
